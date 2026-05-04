@@ -1,6 +1,9 @@
 import 'dotenv/config';
 import readline from 'node:readline';
 import Stream from 'node:stream';
+import { translateLast } from './features/translate.js';
+import { askLLM } from './features/LLM_stream.js';
+import { compressHistory } from './features/resume.js';
 
 const rl = readline.createInterface({
   input: process.stdin,
@@ -33,131 +36,6 @@ function question(prompt) {
   return new Promise(resolve => rl.question(prompt, resolve));
 }
 
-
-async function compressHistory() {
-  const conversation = history
-    .slice(1)
-    .map(m => `${m.role}: ${m.content}`)
-    .join('\n');
-
-  const response = await fetch(currentProvider.url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${currentProvider.key}`
-    },
-    body: JSON.stringify({
-      model: currentProvider.model,
-      messages: [
-        {
-          role: 'system',
-          content: 'Résume cette conversation en 3 à 5 phrases. Garde les infos importantes.'
-        },
-        {
-          role: 'user',
-          content: conversation
-        }
-      ],
-      temperature: 0.3
-    })
-  });
-
-  const data = await response.json();
-  return data.choices[0].message.content;
-}
-
-async function askLLM(userMessage) {
-  history.push({ role: 'user', content: userMessage });
-
-  const response = await fetch( currentProvider.url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${currentProvider.key}`
-    },
-    body: JSON.stringify({
-      model: currentProvider.model,
-      stream: true,
-      messages: history
-    })
-  });
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-
-  let fullContent = '';
-
-  process.stdout.write(`IA [${currentProvider.model}]: `);
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-
-    const chunk = decoder.decode(value);
-    const lines = chunk.split('\n').filter(l => l.startsWith('data: '));
-
-    for (const line of lines) {
-      const jsonStr = line.slice(6);
-
-      if (jsonStr.trim() === '[DONE]') continue;
-
-      try {
-        const parsed = JSON.parse(jsonStr);
-        const delta = parsed.choices[0]?.delta?.content;
-
-        if (delta) {
-          process.stdout.write(delta);
-          fullContent += delta;
-        }
-      } catch {
-        // ignore erreurs de parsing
-      }
-    }
-  }
-
-  process.stdout.write('\n\n');
-
-  history.push({ role: 'assistant', content: fullContent });
-
-  return fullContent;
-}
-
-async function translateLast(targetLanguage){
-  const lastAssistant = [...history]
-    .reverse()
-    .find(m => m.role === 'assistant');
-
-    if (!lastAssistant){
-      console.log("Aucune réponse à traduire.");
-      return;
-    }
-
-    const response = await fetch(currentProvider.url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${currentProvider.key}`
-      },
-      body: JSON.stringify({
-        model: currentProvider.model,
-        messages: [
-          {
-            role: 'system',
-            content: `Tu es un traducteur professionnel. Traduis le texte en ${targetLanguage}. Réponds uniquement avec la traduction.`
-          },
-          {
-            role: 'user',
-            content: lastAssistant.content
-          }
-        ],
-        temperature: 0.1
-      })
-    });
-
-    const data = await response.json();
-    return data.choices[0].message.content;
-}
-
 while (true) {
   const input = await question('Vous : ');
   if (input.startsWith('/provider ')) {
@@ -169,7 +47,7 @@ while (true) {
     continue;
   }
   if (input === '/resume'){
-    const resume = await compressHistory();
+    const resume = await compressHistory(history, currentProvider);
     console.log('IA-resume: ', resume);
     continue;
   }
@@ -177,7 +55,7 @@ while (true) {
   if(input.startsWith('/translate ')){
     const lang = input.split(' ')[1];
 
-    const translated = await translateLast(lang);;
+    const translated = await translateLast(lang, currentProvider);
 
     if (translated) {
       console.log('\nTraduction : \n', translated, '\n');
@@ -186,10 +64,10 @@ while (true) {
     continue;
   }
 
-  await askLLM(input);
+  await askLLM(input, currentProvider, history);
 
   if (history.length > MAX_HISTORY) {
-    const summary = await compressHistory();
+    const summary = await compressHistory(history, currentProvider);
 
     history.splice(1, history.length - 1, {
       role: 'system',
