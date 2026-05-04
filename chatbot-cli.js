@@ -87,7 +87,7 @@ async function askLLM(userMessage) {
 
   let fullContent = '';
 
-  process.stdout.write('IA : ');
+  process.stdout.write(`IA [${currentProvider.model}]: `);
 
   while (true) {
     const { done, value } = await reader.read();
@@ -122,6 +122,42 @@ async function askLLM(userMessage) {
   return fullContent;
 }
 
+async function translateLast(targetLanguage){
+  const lastAssistant = [...history]
+    .reverse()
+    .find(m => m.role === 'assistant');
+
+    if (!lastAssistant){
+      console.log("Aucune réponse à traduire.");
+      return;
+    }
+
+    const response = await fetch(currentProvider.url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${currentProvider.key}`
+      },
+      body: JSON.stringify({
+        model: currentProvider.model,
+        messages: [
+          {
+            role: 'system',
+            content: `Tu es un traducteur professionnel. Traduis le texte en ${targetLanguage}. Réponds uniquement avec la traduction.`
+          },
+          {
+            role: 'user',
+            content: lastAssistant.content
+          }
+        ],
+        temperature: 0.1
+      })
+    });
+
+    const data = await response.json();
+    return data.choices[0].message.content;
+}
+
 while (true) {
   const input = await question('Vous : ');
   if (input.startsWith('/provider ')) {
@@ -135,6 +171,18 @@ while (true) {
   if (input === '/resume'){
     const resume = await compressHistory();
     console.log('IA-resume: ', resume);
+    continue;
+  }
+
+  if(input.startsWith('/translate ')){
+    const lang = input.split(' ')[1];
+
+    const translated = await translateLast(lang);;
+
+    if (translated) {
+      console.log('\nTraduction : \n', translated, '\n');
+    }
+
     continue;
   }
 
